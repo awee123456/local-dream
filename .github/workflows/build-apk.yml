@@ -1,4 +1,4 @@
-name: Build Android APK (Native Engine Optimized)
+name: Build Android APK (Complete Native Engine)
 
 on:
   workflow_dispatch:
@@ -7,32 +7,75 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. ดึงโค้ดโปรเจกต์ (Recursive เพื่อเอา Submodules ทั้งหมด)
-      - name: Checkout Repository
+      # 1. ดึงโค้ดพร้อม Submodules (สำคัญมากสำหรับ Rust/C++)
+      - name: Checkout Repository (Recursive)
         uses: actions/checkout@v4
         with:
           repository: xororz/local-dream
           submodules: recursive
           token: ${{ secrets.GH_TOKEN }}
 
-      # 2. เตรียม Java สำหรับ Gradle
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      # 3. ล้างพื้นที่ (เพื่อป้องกันพื้นที่เต็มระหว่าง Compile Native Code)
+      # 2. เคลียร์พื้นที่เพื่อให้แตกไฟล์ SDK ได้
       - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
 
-      # 4. ติดตั้งเครื่องมือ Build
+      # 3. ลงเครื่องมือที่คู่มือระบุ (Rust, Ninja, CMake, dos2unix)
       - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build build-essential python3-pip dos2unix
           pip3 install gdown
 
-      # 5. ติดตั้ง Rust 1.84.0 สำหรับ Android aarch64
-      - name: Install Rust 1
+      - name: Set up Rust 1.84.0
+        run: |
+          rustup toolchain install 1.84.0
+          rustup default 1.84.0
+          rustup target add aarch64-linux-android
+
+      # 4. เตรียม QNN SDK (หัวใจของการรัน AI บน Snapdragon)
+      - name: Download QNN SDK
+        run: |
+          gdown 1vp9rvm9lriSnbrRg9tgJx4pLgdqQ60Dn -O qnn_sdk.zip
+          unzip -q qnn_sdk.zip -d qnn_sdk_extracted
+          rm qnn_sdk.zip
+          # หา Path ของ SDK อัตโนมัติ
+          QNN_ROOT=$(find $(pwd)/qnn_sdk_extracted -name "lib" -type d | head -n 1 | xargs dirname)
+          echo "QNN_SDK_ROOT=$QNN_ROOT" >> $GITHUB_ENV
+
+      # 5. ตั้งค่า Path ตามคู่มือ (Step 2 ใน Instructions)
+      - name: Configure SDK & NDK Paths
+        run: |
+          # ตั้งค่า NDK Path จากระบบของ GitHub Actions
+          export NDK_PATH=$ANDROID_SDK_ROOT/ndk/$(ls $ANDROID_SDK_ROOT/ndk | sort -V | tail -1)
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+          
+          # แก้ไขไฟล์ CMake เพื่อให้แอปเห็น SDK
+          sed -i "s|set(QNN_SDK_ROOT .*)|set(QNN_SDK_ROOT \"${{ env.QNN_SDK_ROOT }}\")|g" app/src/main/cpp/CMakeLists.txt
+
+      # 6. รันขั้นตอนการคอมไพล์เครื่องยนต์ AI (Step 3: build.sh)
+      - name: Build Libraries (Native Engine)
+        run: |
+          cd app/src/main/cpp/
+          # แก้ไข Patch ไฟล์ให้เป็นระบบ Linux
+          dos2unix SampleApp.patch || true
+          
+          # ส่งค่าตัวแปรสภาพแวดล้อมให้สคริปต์
+          export ANDROID_NDK_ROOT=${{ env.ANDROID_NDK_ROOT }}
+          export QNN_SDK_ROOT=${{ env.QNN_SDK_ROOT }}
+          
+          chmod +x build.sh
+          bash ./build.sh
+
+      # 7. แพ็กทุกอย่างเป็น APK (Step 4)
+      - name: Build APK
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+
+      # 8. ส่งไฟล์ให้คุณโหลด
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Local-Dream-AI-Ready
+          path: app/build/outputs/apk/**/*.apk
