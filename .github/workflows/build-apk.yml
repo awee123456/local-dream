@@ -1,4 +1,4 @@
-name: Build Android APK (Final Safe Mode)
+name: Build Android APK (Complete Native Engine)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      # 1. ดึงโค้ดโปรเจกต์ (ใช้ Token ของคุณ)
       - name: Checkout Repository (Recursive)
         uses: actions/checkout@v4
         with:
@@ -15,38 +14,23 @@ jobs:
           submodules: recursive
           token: ${{ secrets.GH_TOKEN }}
 
-      # 2. เตรียม Java
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      # 3. ล้างพื้นที่แบบ "ปลอดภัย" (ไม่ลบ NDK)
       - name: Free Disk Space (Safe)
         run: |
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf "/usr/local/share/boost"
-          # ห้ามลบ /usr/local/lib/android เด็ดขาด
+          sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
 
-      # 4. ติดตั้งเครื่องมือพื้นฐาน
-      - name: Install Build Tools & Ninja
+      - name: Install Tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build build-essential python3-pip
+          sudo apt-get install -y cmake ninja-build build-essential python3-pip dos2unix
           pip3 install gdown
-          echo "NINJA_PATH=$(which ninja)" >> $GITHUB_ENV
 
-      # 5. ติดตั้ง Rust
-      - name: Install Rust 1.84.0
+      - name: Install Rust 1.84.0 (As Required)
         run: |
           rustup toolchain install 1.84.0
           rustup default 1.84.0
           rustup target add aarch64-linux-android
 
-      # 6. ดาวน์โหลด QNN SDK
-      - name: Download & Extract QNN SDK
+      - name: Download & Prepare QNN SDK 2.39
         run: |
           gdown 1vp9rvm9lriSnbrRg9tgJx4pLgdqQ60Dn -O qnn_sdk.zip
           unzip -q qnn_sdk.zip -d qnn_sdk_extracted
@@ -54,50 +38,34 @@ jobs:
           QNN_ROOT=$(find $(pwd)/qnn_sdk_extracted -name "lib" -type d | head -n 1 | xargs dirname)
           echo "QNN_SDK_ROOT=$QNN_ROOT" >> $GITHUB_ENV
 
-      # 7. แก้ไข Submodule CMake
-      - name: Patch Submodule CMake
+      - name: Configure Paths (Step 2 in Instructions)
         run: |
-          FILE_SP="app/src/main/cpp/3rdparty/tokenizers-cpp/sentencepiece/CMakeLists.txt"
-          [ -f "$FILE_SP" ] && sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.10)/g' "$FILE_SP"
-          FILE_TK="app/src/main/cpp/3rdparty/tokenizers-cpp/CMakeLists.txt"
-          [ -f "$FILE_TK" ] && sed -i '1i cmake_policy(SET CMP0175 OLD)' "$FILE_TK"
-          MAIN_CMAKES="app/src/main/cpp/CMakeLists.txt"
-          [ -f "$MAIN_CMAKES" ] && sed -i '/set(QNN_SDK_ROOT/d' "$MAIN_CMAKES"
-
-      # 8. Compile Native Code
-      - name: Native Compilation
-        run: |
-          export NDK_PATH=$ANDROID_SDK_ROOT/ndk-bundle
-          if [ ! -d "$NDK_PATH" ]; then
-            export NDK_PATH=$ANDROID_SDK_ROOT/ndk/$(ls $ANDROID_SDK_ROOT/ndk | sort -V | tail -1)
-          fi
-          echo "Using NDK at: $NDK_PATH"
+          # อัปเดต QNN_SDK_ROOT ใน CMakeLists.txt
+          sed -i "s|set(QNN_SDK_ROOT .*)|set(QNN_SDK_ROOT \"${{ env.QNN_SDK_ROOT }}\")|g" app/src/main/cpp/CMakeLists.txt
           
+          # ค้นหา NDK Path และตั้งค่าสภาพแวดล้อม
+          export NDK_PATH=$ANDROID_SDK_ROOT/ndk/$(ls $ANDROID_SDK_ROOT/ndk | sort -V | tail -1)
+          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
+
+      - name: Build Libraries (Step 3: Linux bash ./build.sh)
+        run: |
           cd app/src/main/cpp/
-          mkdir -p build
+          # แก้ไขปัญหา CMake Policy และความเข้ากันได้
+          sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.10)/g' 3rdparty/tokenizers-cpp/sentencepiece/CMakeLists.txt
           
-          cmake -G Ninja \
-            -DCMAKE_MAKE_PROGRAM=${{ env.NINJA_PATH }} \
-            -DCMAKE_TOOLCHAIN_FILE=$NDK_PATH/build/cmake/android.toolchain.cmake \
-            -DANDROID_ABI=arm64-v8a \
-            -DANDROID_PLATFORM=android-21 \
-            -DQNN_SDK_ROOT=${{ env.QNN_SDK_ROOT }} \
-            -DCMAKE_POLICY_DEFAULT_CMP0175=OLD \
-            -Wno-dev \
-            -B build .
-          
-          cmake --build build
+          # ตั้งค่า NDK และรันสคริปต์คอมไพล์หลัก
+          export ANDROID_NDK_ROOT=${{ env.ANDROID_NDK_ROOT }}
+          export QNN_SDK_ROOT=${{ env.QNN_SDK_ROOT }}
+          chmod +x build.sh
+          bash ./build.sh
 
-      # 9. สร้างไฟล์ APK
-      - name: Build Android Debug APK
+      - name: Build APK (Step 4: gradlew assembleDebug)
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug
 
-      # 10. อัปโหลดไฟล์
       - name: Upload Finished APK
         uses: actions/upload-artifact@v4
         with:
-          name: local-dream-app
+          name: local-dream-complete
           path: app/build/outputs/apk/**/*.apk
-          if-no-files-found: error
