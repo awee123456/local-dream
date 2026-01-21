@@ -1,4 +1,4 @@
-name: Build Android APK (Complete Native Engine)
+name: Build Android APK (Native Engine Optimized)
 
 on:
   workflow_dispatch:
@@ -7,65 +7,32 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository (Recursive)
+      # 1. ดึงโค้ดโปรเจกต์ (Recursive เพื่อเอา Submodules ทั้งหมด)
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           repository: xororz/local-dream
           submodules: recursive
           token: ${{ secrets.GH_TOKEN }}
 
-      - name: Free Disk Space (Safe)
+      # 2. เตรียม Java สำหรับ Gradle
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # 3. ล้างพื้นที่ (เพื่อป้องกันพื้นที่เต็มระหว่าง Compile Native Code)
+      - name: Free Disk Space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc "/usr/local/share/boost"
 
-      - name: Install Tools
+      # 4. ติดตั้งเครื่องมือ Build
+      - name: Install Build Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y cmake ninja-build build-essential python3-pip dos2unix
           pip3 install gdown
 
-      - name: Install Rust 1.84.0 (As Required)
-        run: |
-          rustup toolchain install 1.84.0
-          rustup default 1.84.0
-          rustup target add aarch64-linux-android
-
-      - name: Download & Prepare QNN SDK 2.39
-        run: |
-          gdown 1vp9rvm9lriSnbrRg9tgJx4pLgdqQ60Dn -O qnn_sdk.zip
-          unzip -q qnn_sdk.zip -d qnn_sdk_extracted
-          rm qnn_sdk.zip
-          QNN_ROOT=$(find $(pwd)/qnn_sdk_extracted -name "lib" -type d | head -n 1 | xargs dirname)
-          echo "QNN_SDK_ROOT=$QNN_ROOT" >> $GITHUB_ENV
-
-      - name: Configure Paths (Step 2 in Instructions)
-        run: |
-          # อัปเดต QNN_SDK_ROOT ใน CMakeLists.txt
-          sed -i "s|set(QNN_SDK_ROOT .*)|set(QNN_SDK_ROOT \"${{ env.QNN_SDK_ROOT }}\")|g" app/src/main/cpp/CMakeLists.txt
-          
-          # ค้นหา NDK Path และตั้งค่าสภาพแวดล้อม
-          export NDK_PATH=$ANDROID_SDK_ROOT/ndk/$(ls $ANDROID_SDK_ROOT/ndk | sort -V | tail -1)
-          echo "ANDROID_NDK_ROOT=$NDK_PATH" >> $GITHUB_ENV
-
-      - name: Build Libraries (Step 3: Linux bash ./build.sh)
-        run: |
-          cd app/src/main/cpp/
-          # แก้ไขปัญหา CMake Policy และความเข้ากันได้
-          sed -i 's/cmake_minimum_required(VERSION [0-9.]*)/cmake_minimum_required(VERSION 3.10)/g' 3rdparty/tokenizers-cpp/sentencepiece/CMakeLists.txt
-          
-          # ตั้งค่า NDK และรันสคริปต์คอมไพล์หลัก
-          export ANDROID_NDK_ROOT=${{ env.ANDROID_NDK_ROOT }}
-          export QNN_SDK_ROOT=${{ env.QNN_SDK_ROOT }}
-          chmod +x build.sh
-          bash ./build.sh
-
-      - name: Build APK (Step 4: gradlew assembleDebug)
-        run: |
-          chmod +x gradlew
-          ./gradlew assembleDebug
-
-      - name: Upload Finished APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: local-dream-complete
-          path: app/build/outputs/apk/**/*.apk
+      # 5. ติดตั้ง Rust 1.84.0 สำหรับ Android aarch64
+      - name: Install Rust 1
