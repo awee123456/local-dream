@@ -9,7 +9,11 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+
+    env:
+      QNN_VERSION: 2.39.0.250926
+      RUST_VERSION: 1.84.0
 
     steps:
     - name: Checkout code
@@ -27,23 +31,43 @@ jobs:
     - name: Install Build Tools
       run: |
         sudo apt-get update
-        sudo apt-get install -y cmake ninja-build build-essential dos2unix ccache
+        sudo apt-get install -y \
+          cmake ninja-build build-essential dos2unix ccache unzip
 
-    - name: Install Rust
+    # ---------- Rust ----------
+    - name: Install Rust toolchain
       run: |
-        rustup default 1.84.0
+        rustup toolchain install ${RUST_VERSION}
+        rustup default ${RUST_VERSION}
         rustup target add aarch64-linux-android
 
-    - name: Download and Setup QNN SDK
-      run: |
-        # Download QNN SDK 2.39 from the provided link
-        wget -O qnn_sdk.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/2.39.0.250926/v2.39.0.250926.zip"
-        unzip qnn_sdk.zip -d qnn_sdk_extracted
-        # Find the actual SDK directory (it might be nested)
-        QNN_PATH=$(pwd)/$(find qnn_sdk_extracted -maxdepth 2 -type d -name "2.39.*" | head -n 1)
-        echo "QNN_SDK_ROOT=$QNN_PATH" >> $GITHUB_ENV
-        echo "QNN_SDK_ROOT is $QNN_PATH"
+    - name: Cache Cargo
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/.cargo
+          target
+        key: cargo-${{ runner.os }}-${{ env.RUST_VERSION }}
 
+    # ---------- QNN SDK ----------
+    - name: Cache QNN SDK
+      id: cache-qnn
+      uses: actions/cache@v4
+      with:
+        path: qnn_sdk
+        key: qnn-${{ env.QNN_VERSION }}
+
+    - name: Download QNN SDK
+      if: steps.cache-qnn.outputs.cache-hit != 'true'
+      run: |
+        wget -O qnn_sdk.zip "https://apigwx-aws.qualcomm.com/qsc/public/v1/api/download/software/sdks/Qualcomm_AI_Runtime_Community/All/${QNN_VERSION}/v${QNN_VERSION}.zip"
+        unzip qnn_sdk.zip
+        mv */2.39.* qnn_sdk
+
+    - name: Export QNN_SDK_ROOT
+      run: echo "QNN_SDK_ROOT=${{ github.workspace }}/qnn_sdk" >> $GITHUB_ENV
+
+    # ---------- Android NDK ----------
     - name: Setup Android NDK
       uses: nttld/setup-ndk@v1
       id: setup-ndk
@@ -51,30 +75,27 @@ jobs:
         ndk-version: r28
         add-to-path: false
 
-    - name: Update Paths and Build Native Libraries
+    - name: Cache Android NDK
+      uses: actions/cache@v4
+      with:
+        path: ${{ steps.setup-ndk.outputs.ndk-path }}
+        key: ndk-r28-${{ runner.os }}
+
+    # ---------- Native build ----------
+    - name: Build Native Libraries
       env:
         ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
       run: |
         cd app/src/main/cpp
-        
-        # Update QNN_SDK_ROOT in CMakeLists.txt
-        sed -i "s|set(QNN_SDK_ROOT .*)|set(QNN_SDK_ROOT ${{ env.QNN_SDK_ROOT }})|g" CMakeLists.txt
-        
-        # Update ANDROID_NDK_ROOT in CMakePresets.json
-        sed -i "s|\"ANDROID_NDK_ROOT\": \".*\"|\"ANDROID_NDK_ROOT\": \"${{ steps.setup-ndk.outputs.ndk-path }}\"|g" CMakePresets.json
-        
-        # Ensure build.sh is executable and has correct line endings
         dos2unix build.sh
         chmod +x build.sh
-        
-        # Run build script
         ./build.sh
 
+    # ---------- Gradle ----------
     - name: Build APK
       run: |
         chmod +x gradlew
-        # Build basicDebug to avoid signing issues for now
-        ./gradlew assembleBasicDebug
+        ./gradlew assembleBasicDebug --no-daemon
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
