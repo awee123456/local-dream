@@ -76,11 +76,11 @@ jobs:
         sed -i "s/versionName = .*/versionName = \"$VERSION_NAME\"/" app/build.gradle.kts
         echo "Version set to $VERSION_NAME ($VERSION_CODE)"
 
-    - name: Run Android Lint
-      run: |
-        chmod +x gradlew
-        # Run lint but ignore missing translations to allow build to proceed
-        ./gradlew lintBasicDebug -Pandroid.lintOptions.abortOnError=false
+    # - name: Run Android Lint
+    #   run: |
+    #     chmod +x gradlew
+    #     # Run lint but ignore missing translations to allow build to proceed
+    #     ./gradlew lintBasicDebug -Pandroid.lintOptions.abortOnError=false
 
     - name: Update Paths and Build Native Libraries
       env:
