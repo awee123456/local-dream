@@ -121,6 +121,12 @@ class ModelDownloadService : Service() {
                 tempFile = File(tempDir, "${modelId}_${System.currentTimeMillis()}.tmp")
 
                 downloadFile(fileUrl, tempFile, modelId, modelName)
+                
+                // Verify file integrity
+                if (tempFile.length() == 0L) {
+                    throw Exception("Downloaded file is empty")
+                }
+                Log.d(TAG, "Downloaded file size: ${tempFile.length()} bytes, MD5: ${calculateChecksum(tempFile)}")
 
                 when (modelType) {
                     "sd" -> {
@@ -196,6 +202,18 @@ class ModelDownloadService : Service() {
                 }
             }
         }
+    }
+
+    private fun calculateChecksum(file: File): String {
+        val digest = java.security.MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (input.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        return digest.digest().joinToString("") { "%02x".format(it) }
     }
 
     private suspend fun downloadFile(
